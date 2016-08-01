@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.annotation.TargetApi;
 import android.content.Intent;
 import android.support.design.widget.Snackbar;
+import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 
 import android.os.Build;
@@ -28,6 +29,9 @@ import com.omkarmoghe.pokemap.controllers.app_preferences.PokemapSharedPreferenc
 import com.omkarmoghe.pokemap.controllers.net.GoogleManager;
 import com.omkarmoghe.pokemap.controllers.net.GoogleService;
 import com.omkarmoghe.pokemap.controllers.net.NianticManager;
+import com.omkarmoghe.pokemap.models.login.GoogleLoginInfo;
+import com.omkarmoghe.pokemap.models.login.LoginInfo;
+import com.omkarmoghe.pokemap.models.login.PtcLoginInfo;
 
 /**
  * A login screen that offers login via username/password. And a Google Sign in
@@ -46,10 +50,10 @@ public class LoginActivity extends AppCompatActivity{
     private View mLoginFormView;
     private NianticManager mNianticManager;
     private NianticManager.LoginListener mNianticLoginListener;
+    private NianticManager.AuthListener mNianticAuthListener;
     private GoogleManager mGoogleManager;
     private GoogleManager.LoginListener mGoogleLoginListener;
 
-    private String mDeviceCode;
     private PokemapAppPreferences mPref;
 
     @Override
@@ -59,60 +63,79 @@ public class LoginActivity extends AppCompatActivity{
         mNianticManager = NianticManager.getInstance();
         mGoogleManager = GoogleManager.getInstance();
         mPref = new PokemapSharedPreferences(this);
-        
-        if (mPref.isUsernameSet() && mPref.isPasswordSet()) {
-            mNianticManager.login(mPref.getUsername(), mPref.getPassword());
-            finishLogin();
-        }
 
         setContentView(R.layout.activity_login);
 
-        mNianticLoginListener = new NianticManager.LoginListener() {
+        mNianticAuthListener = new NianticManager.AuthListener() {
             @Override
-            public void authSuccessful(String authToken) {
-                showProgress(false);
-                Log.d(TAG, "authSuccessful() called with: authToken = [" + authToken + "]");
-                mNianticManager.setPTCAuthToken(authToken);
+            public void authSuccessful() {
                 finishLogin();
             }
 
             @Override
-            public void authFailed(String message) {
+            public void authFailed(String message, String provider) {
+                switch (provider){
+                    case LoginInfo.PROVIDER_PTC:
+                        showPTCLoginFailed();
+                        break;
+                    case LoginInfo.PROVIDER_GOOGLE:
+                        showGoogleLoginFailed();
+                        break;
+                }
                 Log.d(TAG, "authFailed() called with: message = [" + message + "]");
-                Snackbar.make((View)mLoginFormView.getParent(), "PTC Login Failed", Snackbar.LENGTH_LONG).show();
+            }
+        };
+
+        mNianticLoginListener = new NianticManager.LoginListener() {
+            @Override
+            public void authSuccessful(String authToken) {
+                Log.d(TAG, "authSuccessful() called with: authToken = [" + authToken + "]");
+                PtcLoginInfo info = new PtcLoginInfo(authToken,
+                        mUsernameView.getText().toString(), mPasswordView.getText().toString());
+                mPref.setLoginInfo(info);
+                mNianticManager.setLoginInfo(LoginActivity.this, info, mNianticAuthListener);
+            }
+
+            @Override
+            public void authFailed(String message) {
+                Log.e(TAG, "Failed to authenticate. authFailed() called with: message = [" + message + "]");
+                showPTCLoginFailed();
             }
         };
 
         mGoogleLoginListener = new GoogleManager.LoginListener() {
             @Override
-            public void authSuccessful(String authToken) {
-                showProgress(false);
+            public void authSuccessful(String authToken, String refreshToken) {
+                GoogleLoginInfo info = new GoogleLoginInfo(authToken, refreshToken);
                 Log.d(TAG, "authSuccessful() called with: authToken = [" + authToken + "]");
-                mNianticManager.setGoogleAuthToken(authToken);
-                finishLogin();
+                mPref.setLoginInfo(info);
+                mNianticManager.setLoginInfo(LoginActivity.this, info, mNianticAuthListener);
             }
 
             @Override
             public void authFailed(String message) {
-                showProgress(false);
-                Log.d(TAG, "authFailed() called with: message = [" + message + "]");
-                Snackbar.make((View)mLoginFormView.getParent(), "Google Login Failed", Snackbar.LENGTH_LONG).show();
+                Log.d(TAG, "Failed to authenticate. authFailed() called with: message = [" + message + "]");
+                showGoogleLoginFailed();
             }
 
             @Override
             public void authRequested(GoogleService.AuthRequest body) {
-                GoogleAuthActivity.startForResult(LoginActivity.this, REQUEST_USER_AUTH,
-                        body.getVerificationUrl(), body.getUserCode());
-                mDeviceCode = body.getDeviceCode();
+                //Do nothing
             }
         };
 
-        //Bold words in Warning
-        TextView warning = (TextView) findViewById(R.id.login_warning);
-        String text = getString(R.string.login_warning) + " <b>banned</b>.";
-        warning.setText(Html.fromHtml(text));
+        findViewById(R.id.txtDisclaimer).setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                new AlertDialog.Builder(LoginActivity.this)
+                        .setTitle(getString(R.string.login_warning_title))
+                        .setMessage(Html.fromHtml(getString(R.string.login_warning)))
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            }
+        });
 
-        // Set up the login form.
+        // Set up the triggerAutoLogin form.
         mUsernameView = (AutoCompleteTextView) findViewById(R.id.username);
 
         mPasswordView = (EditText) findViewById(R.id.password);
@@ -120,18 +143,24 @@ public class LoginActivity extends AppCompatActivity{
             @Override
             public boolean onEditorAction(TextView textView, int id, KeyEvent keyEvent) {
                 if (id == R.id.login || id == EditorInfo.IME_NULL) {
-                    attemptPTCLogin();
+                    validatePTCLoginForm();
                     return true;
                 }
                 return false;
             }
         });
 
+        LoginInfo loginInfo = mPref.getLoginInfo();
+        if(loginInfo != null && loginInfo instanceof PtcLoginInfo){
+            mUsernameView.setText(((PtcLoginInfo) loginInfo).getUsername());
+            mPasswordView.setText(((PtcLoginInfo) loginInfo).getPassword());
+        }
+
         Button signInButton = (Button) findViewById(R.id.email_sign_in_button);
         signInButton.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View view) {
-                attemptPTCLogin();
+                validatePTCLoginForm();
             }
         });
 
@@ -143,9 +172,21 @@ public class LoginActivity extends AppCompatActivity{
         signInButtonGoogle.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View view) {
-                mGoogleManager.authUser(mGoogleLoginListener);
+                GoogleAuthActivity.startForResult(LoginActivity.this, REQUEST_USER_AUTH);
             }
         });
+
+        triggerAutoLogin();
+    }
+
+    private void showPTCLoginFailed() {
+        showProgress(false);
+        Snackbar.make((View)mLoginFormView.getParent(), getString(R.string.toast_ptc_login_error), Snackbar.LENGTH_LONG).show();
+    }
+
+    private void showGoogleLoginFailed() {
+        showProgress(false);
+        Snackbar.make((View)mLoginFormView.getParent(), getString(R.string.toast_google_login_error), Snackbar.LENGTH_LONG).show();
     }
 
     @Override
@@ -154,22 +195,23 @@ public class LoginActivity extends AppCompatActivity{
         if(resultCode == RESULT_OK){
             if(requestCode == REQUEST_USER_AUTH){
                 showProgress(true);
-                mGoogleManager.requestToken(mDeviceCode, mGoogleLoginListener);
+                mGoogleManager.requestToken(data.getStringExtra(GoogleAuthActivity.EXTRA_CODE),
+                        mGoogleLoginListener);
             }
         }
     }
 
     /**
-     * Attempts to sign in or register the account specified by the login form.
+     * Attempts to sign in or register the account specified by the triggerAutoLogin form.
      * If there are form errors (invalid email, missing fields, etc.), the
-     * errors are presented and no actual login attempt is made.
+     * errors are presented and no actual triggerAutoLogin attempt is made.
      */
-    private void attemptPTCLogin() {
+    private void validatePTCLoginForm() {
         // Reset errors.
         mUsernameView.setError(null);
         mPasswordView.setError(null);
 
-        // Store values at the time of the login attempt.
+        // Store values at the time of the triggerAutoLogin attempt.
         String username = mUsernameView.getText().toString();
         String password = mPasswordView.getText().toString();
 
@@ -191,15 +233,14 @@ public class LoginActivity extends AppCompatActivity{
         }
 
         if (cancel) {
-            // There was an error; don't attempt login and focus the first
+            // There was an error; don't attempt triggerAutoLogin and focus the first
             // form field with an error.
             focusView.requestFocus();
         } else {
             // Show a progress spinner, and kick off a background task to
-            // perform the user login attempt.
+            // perform the user triggerAutoLogin attempt.
             showProgress(true);
             mNianticManager.login(username, password, mNianticLoginListener);
-
         }
     }
 
@@ -210,10 +251,11 @@ public class LoginActivity extends AppCompatActivity{
     }
 
     /**
-     * Shows the progress UI and hides the login form.
+     * Shows the progress UI and hides the triggerAutoLogin form.
      */
     @TargetApi(Build.VERSION_CODES.HONEYCOMB_MR2)
     private void showProgress(final boolean show) {
+
         // On Honeycomb MR2 we have the ViewPropertyAnimator APIs, which allow
         // for very easy animations. If available, use these APIs to fade-in
         // the progress spinner.
@@ -242,6 +284,13 @@ public class LoginActivity extends AppCompatActivity{
             // and hide the relevant UI components.
             mProgressView.setVisibility(show ? View.VISIBLE : View.GONE);
             mLoginFormView.setVisibility(show ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    private void triggerAutoLogin() {
+        if(mPref.isLoggedIn()){
+            showProgress(true);
+            mNianticManager.setLoginInfo(this, mPref.getLoginInfo(), mNianticAuthListener);
         }
     }
 }
